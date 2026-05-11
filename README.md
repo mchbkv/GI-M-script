@@ -1,3 +1,5 @@
+![Python](https://img.shields.io/badge/python-3.10%2B-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
 # 📅 Telegram Scheduled Message Userbot
 
 A lightweight Telegram userbot built with [Pyrogram](https://docs.pyrogram.org/) that lets you **bulk-schedule messages** and **clear all scheduled messages** in any chat — directly from your own account.
@@ -11,17 +13,18 @@ A lightweight Telegram userbot built with [Pyrogram](https://docs.pyrogram.org/)
 | `.send <interval> <count>` | Schedules `count` copies of the replied-to message at the given interval |
 | `.clear` | Deletes **all** scheduled messages in the current chat |
 
-- Supports text, media, and **media group** (album) messages
-- Automatically pauses every 20 messages to avoid Telegram flood-wait
-- Stops gracefully when Telegram's 100-message schedule limit is reached
-- All status reports are sent privately to **Saved Messages**
+- 💎 **Perfect formatting retention:** Copies complex entities (Quotes, custom Dates, Premium emojis) flawlessly using Telegram's server-side Forward API.
+- 🖼️ Supports text, single media, and **media group** (album) messages.
+- 🛡️ Automatically pauses every 20 messages to avoid Telegram flood-wait limits.
+- 🛑 Stops gracefully when Telegram's 100-message schedule limit is reached.
+- 📝 All status reports are sent privately to your **Saved Messages** (`me`).
 
 ---
 
 ## ⚙️ Requirements
 
-- Python **3.10+**
-- A Telegram account with API credentials from [my.telegram.org](https://my.telegram.org)
+- Python **3.10+** (Includes a manual event-loop fix for full **Python 3.14** compatibility).
+- A Telegram account with API credentials from [my.telegram.org](https://my.telegram.org).
 
 ---
 
@@ -30,12 +33,10 @@ A lightweight Telegram userbot built with [Pyrogram](https://docs.pyrogram.org/)
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/your-username/gi-m-script.git
-cd gi-m-script
+git clone https://github.com/mchbkv/GI-M-script.git
+cd GI-M-script
 ```
-
 ### 2. Create a virtual environment
-
 ```bash
 python -m venv .venv
 
@@ -45,13 +46,10 @@ python -m venv .venv
 # macOS / Linux
 source .venv/bin/activate
 ```
-
 ### 3. Install dependencies
-
 ```bash
 pip install -r requirements.txt
 ```
-
 > **Note:** `TgCrypto` is optional but strongly recommended — it significantly speeds up Pyrogram's encryption.
 
 ### 4. Configure credentials
@@ -126,6 +124,8 @@ Run in any chat to immediately delete **all** scheduled messages in that chat.
 | Session expired / login required | Delete `my_account.session` and re-run the script to log in again. |
 
 ---
+## 🐛 Feedback & Issues
+Found a bug or have a feature request? Please open an issue in the [Issues tab](https://github.com/mchbkv/GI-M-script/issues).
 
 ## 📄 License
 
