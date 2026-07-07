@@ -17,7 +17,7 @@ except RuntimeError:
     asyncio.set_event_loop(asyncio.new_event_loop())
 
 from dotenv import load_dotenv
-from pyrogram import Client, filters
+from pyrogram import Client, filters, raw, utils
 from pyrogram.raw import functions
 
 load_dotenv()
@@ -53,6 +53,90 @@ def get_topic_id(message, fallback_message=None):
         topic_id = getattr(fallback_message, "reply_to_top_message_id", None)
 
     return topic_id
+
+
+def get_message_file_id(message):
+    for field in ("photo", "video", "document", "audio", "animation", "voice", "video_note", "sticker"):
+        media = getattr(message, field, None)
+
+        if media and getattr(media, "file_id", None):
+            return media.file_id
+
+    return None
+
+
+async def parse_message_text(client, message):
+    text = message.text or message.caption or ""
+    entities = message.entities if message.text else message.caption_entities
+    parsed = await utils.parse_text_entities(client, text, None, entities)
+
+    return parsed["message"], parsed["entities"] or None
+
+
+async def schedule_recreated_message(client, peer, message, schedule_date, topic_id, media_group=None):
+    schedule_timestamp = int(schedule_date.timestamp())
+
+    if media_group:
+        multi_media = []
+
+        for media_message in media_group:
+            file_id = get_message_file_id(media_message)
+
+            if not file_id:
+                raise ValueError("this media group contains an unsupported message type")
+
+            text, entities = await parse_message_text(client, media_message)
+            multi_media.append(
+                raw.types.InputSingleMedia(
+                    media=utils.get_input_media_from_file_id(file_id),
+                    random_id=client.rnd_id(),
+                    message=text,
+                    entities=entities
+                )
+            )
+
+        await client.invoke(
+            functions.messages.SendMultiMedia(
+                peer=peer,
+                multi_media=multi_media,
+                top_msg_id=topic_id,
+                schedule_date=schedule_timestamp
+            )
+        )
+        return
+
+    file_id = get_message_file_id(message)
+
+    if file_id:
+        text, entities = await parse_message_text(client, message)
+        await client.invoke(
+            functions.messages.SendMedia(
+                peer=peer,
+                media=utils.get_input_media_from_file_id(file_id),
+                message=text,
+                random_id=client.rnd_id(),
+                top_msg_id=topic_id,
+                entities=entities,
+                schedule_date=schedule_timestamp
+            )
+        )
+        return
+
+    if message.text:
+        text, entities = await parse_message_text(client, message)
+        await client.invoke(
+            functions.messages.SendMessage(
+                peer=peer,
+                message=text,
+                random_id=client.rnd_id(),
+                top_msg_id=topic_id,
+                entities=entities,
+                schedule_date=schedule_timestamp
+            )
+        )
+        return
+
+    raise ValueError("unsupported protected message type")
 
 
 @app.on_message(filters.me & filters.command("send", prefixes="."))
@@ -91,6 +175,8 @@ async def schedule_messages(client, message):
     )
 
     msg_ids = [target_msg.id]
+    media_group = None
+
     if target_msg.media_group_id:
         try:
             media_group = await client.get_media_group(chat_id, target_msg.id)
@@ -103,24 +189,29 @@ async def schedule_messages(client, message):
     from_peer = await client.resolve_peer(target_msg.chat.id)
 
     success_count = 0
+    use_forward = True
 
     for i in range(1, num + 1):
         schedule_date = datetime.now() + timedelta(seconds=interval_seconds * i)
 
         try:
-            random_ids = [client.rnd_id() for _ in msg_ids]
-            
-            await client.invoke(
-                functions.messages.ForwardMessages(
-                    from_peer=from_peer,
-                    to_peer=peer,
-                    id=msg_ids,
-                    random_id=random_ids,
-                    top_msg_id=topic_id,
-                    schedule_date=int(schedule_date.timestamp()),
-                    drop_author=True
+            if use_forward:
+                random_ids = [client.rnd_id() for _ in msg_ids]
+
+                await client.invoke(
+                    functions.messages.ForwardMessages(
+                        from_peer=from_peer,
+                        to_peer=peer,
+                        id=msg_ids,
+                        random_id=random_ids,
+                        top_msg_id=topic_id,
+                        schedule_date=int(schedule_date.timestamp()),
+                        drop_author=True
+                    )
                 )
-            )
+            else:
+                await schedule_recreated_message(client, peer, target_msg, schedule_date, topic_id, media_group)
+
             success_count += 1
 
         except Exception as e:
@@ -128,6 +219,18 @@ async def schedule_messages(client, message):
             if "SCHEDULE_TOO_MUCH" in error_text:
                 await client.send_message("me", f"Telegram limit reached (100 msgs). Stopped.")
                 break
+            elif "CHAT_FORWARDS_RESTRICTED" in error_text and use_forward:
+                use_forward = False
+
+                try:
+                    await schedule_recreated_message(client, peer, target_msg, schedule_date, topic_id, media_group)
+                    success_count += 1
+                    await client.send_message(
+                        "me",
+                        "Forwarding is restricted in this chat. Switched to resend mode for the remaining messages."
+                    )
+                except Exception as fallback_error:
+                    await client.send_message("me", f"Fallback failed on step {i}: {fallback_error}")
             else:
                 await client.send_message("me", f"Error on step {i}: {error_text}")
 
