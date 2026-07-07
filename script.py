@@ -46,6 +46,15 @@ def parse_time(time_str: str) -> int:
     return total_seconds
 
 
+def get_topic_id(message, fallback_message=None):
+    topic_id = getattr(message, "reply_to_top_message_id", None)
+
+    if topic_id is None and fallback_message is not None:
+        topic_id = getattr(fallback_message, "reply_to_top_message_id", None)
+
+    return topic_id
+
+
 @app.on_message(filters.me & filters.command("send", prefixes="."))
 async def schedule_messages(client, message):
     if not message.reply_to_message:
@@ -71,12 +80,14 @@ async def schedule_messages(client, message):
     target_msg = message.reply_to_message
     chat_id = message.chat.id
     chat_title = message.chat.title or message.chat.first_name or str(chat_id)
+    topic_id = get_topic_id(message, target_msg)
+    destination = chat_title if topic_id is None else f"{chat_title} / topic {topic_id}"
 
     await message.delete()
 
     report_msg = await client.send_message(
         "me",
-        f"⏳ Scheduling {num} messages for chat **{chat_title}**..."
+        f"⏳ Scheduling {num} messages for chat **{destination}**..."
     )
 
     msg_ids = [target_msg.id]
@@ -105,6 +116,7 @@ async def schedule_messages(client, message):
                     to_peer=peer,
                     id=msg_ids,
                     random_id=random_ids,
+                    top_msg_id=topic_id,
                     schedule_date=int(schedule_date.timestamp()),
                     drop_author=True
                 )
@@ -135,7 +147,7 @@ async def schedule_messages(client, message):
     await client.edit_message_text(
         chat_id="me",
         message_id=report_msg.id,
-        text=f"✅ Done. Successfully scheduled **{success_count}** messages in chat **{chat_title}**."
+        text=f"✅ Done. Successfully scheduled **{success_count}** messages in chat **{destination}**."
     )
 
 
