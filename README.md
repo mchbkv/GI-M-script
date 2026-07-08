@@ -11,10 +11,13 @@ A lightweight Telegram userbot built with [Pyrogram](https://docs.pyrogram.org/)
 | Command | Description |
 |---|---|
 | `.send <interval> <count>` | Schedules `count` copies of the replied-to message at the given interval |
+| `.update` | Clears current scheduled messages and recreates the last saved `.send` schedule in the current chat/topic |
 | `.clear` | Deletes **all** scheduled messages in the current chat |
 
 - 💎 **Perfect formatting retention:** Copies complex entities (Quotes, custom Dates, Premium emojis) flawlessly using Telegram's server-side Forward API.
 - 🖼️ Supports text, single media, and **media group** (album) messages.
+- 🔁 Remembers the last `.send` settings per chat/topic and can refresh them with `.update`.
+- ♻️ Can auto-clear old scheduled messages, fill the schedule up to Telegram's limit, and auto-refresh empty schedules.
 - 🛡️ Automatically pauses every 20 messages to avoid Telegram flood-wait limits.
 - 🛑 Stops gracefully when Telegram's 100-message schedule limit is reached.
 - 📝 All status reports are sent privately to your **Saved Messages** (`me`).
@@ -92,17 +95,52 @@ Reply to any message and run this command to schedule `count` copies of it at th
 .send 2h30m 4       → 4 messages, every 2 hours 30 minutes
 ```
 
-Progress updates are sent to your **Saved Messages**.
+Progress updates are sent to your **Saved Messages**. By default, `.send` first clears old scheduled messages in the same chat/topic and fills the schedule up to Telegram's 100 scheduled-message limit.
+
+The latest `.send` settings are saved locally in `schedule_state.json` so `.update` and auto-refresh can reuse the same message, interval, and count later. This file is ignored by Git.
+
+---
+
+### `.update`
+
+Run in a chat or forum topic where `.send` was used before. The command deletes current scheduled messages in that chat, then schedules the saved message again from the current moment using the saved interval and count.
+
+```
+.update
+```
+
+If Telegram returns an error during update, the script sends manual scheduling details to your **Saved Messages**: the message link or id, full chat/topic name, interval, count, and error text.
+
+When `AUTO_REFRESH_ENABLED` is enabled in `script.py`, the userbot periodically checks saved schedules. If a saved chat/topic has no scheduled messages left, it recreates the schedule automatically. If Telegram reports that sending is forbidden in a chat, auto-refresh is disabled for that chat/topic.
 
 ---
 
 ### `.clear`
 
-Run in any chat to immediately delete **all** scheduled messages in that chat.
+Run in any chat to immediately delete scheduled messages in that chat/topic and disable the saved auto-refresh settings for it.
 
 ```
 .clear
 ```
+
+If `.clear` is run outside a forum topic, it removes saved auto-refresh settings for the whole chat.
+
+---
+
+## 🔧 Automation Settings
+
+These toggles are available near the top of `script.py`:
+
+```python
+AUTO_CLEAR_BEFORE_SEND = True
+AUTO_FILL_TO_LIMIT = True
+AUTO_REFRESH_ENABLED = True
+AUTO_REFRESH_INTERVAL_SECONDS = 300
+```
+
+`AUTO_CLEAR_BEFORE_SEND` clears old scheduled messages before each `.send`.
+`AUTO_FILL_TO_LIMIT` schedules as many batches as Telegram's 100 scheduled-message limit allows.
+`AUTO_REFRESH_ENABLED` keeps saved schedules alive when their scheduled queue becomes empty.
 
 ---
 

@@ -1,4 +1,6 @@
 .env
+schedule_state.json
+schedule_state.tmp
 
 *.session
 *.session-journal
