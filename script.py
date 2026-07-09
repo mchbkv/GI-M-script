@@ -48,6 +48,9 @@ WRITE_FORBIDDEN_MARKERS = (
     "PEER_ID_INVALID",
     "BANNED_RIGHTS"
 )
+SCHEDULE_STOP_MARKERS = (
+    "SCHEDULE_DATE_TOO_LATE",
+)
 
 
 def parse_time(time_str: str) -> int:
@@ -78,6 +81,10 @@ def get_schedule_key(chat_id, topic_id):
 
 def is_write_forbidden_error(error_text):
     return any(marker in error_text for marker in WRITE_FORBIDDEN_MARKERS)
+
+
+def is_schedule_stop_error(error_text):
+    return any(marker in error_text for marker in SCHEDULE_STOP_MARKERS)
 
 
 def get_batch_limit(message_count):
@@ -230,17 +237,27 @@ async def schedule_recreated_message(client, peer, message, schedule_date, topic
 
 def parse_send_command(command_text):
     try:
-        _, time_str, num_str = command_text.split()
-        num = int(num_str)
+        parts = command_text.split()
+        if len(parts) == 2 and AUTO_FILL_TO_LIMIT:
+            _, time_str = parts
+            num = None
+        elif len(parts) == 3:
+            _, time_str, num_str = parts
+            num = int(num_str)
+        else:
+            raise ValueError
+
         interval_seconds = parse_time(time_str)
 
         if interval_seconds == 0:
             raise ValueError("invalid time format")
 
     except ValueError:
+        if AUTO_FILL_TO_LIMIT:
+            raise ValueError("format is .send <time> or .send <time> <count>")
         raise ValueError("format is .send <time> <count>")
 
-    if num < 1:
+    if num is not None and num < 1:
         raise ValueError("count must be greater than 0")
 
     return time_str, interval_seconds, num
@@ -362,7 +379,7 @@ async def schedule_batch(client, peer, from_peer, target_msg, msg_ids, media_gro
                 await client.send_message("me", f"Error on step {i}: {error_text}")
                 if error_callback:
                     await error_callback(error_text)
-                if stop_on_error:
+                if stop_on_error or is_schedule_stop_error(error_text):
                     break
 
         if report_msg and i % 20 == 0 and i < count:
@@ -477,7 +494,11 @@ async def schedule_messages(client, message):
 
     report_msg = await client.send_message(
         "me",
-        f"⏳ Scheduling {num} messages for chat **{destination}**..."
+        (
+            f"⏳ Scheduling messages for chat **{destination}**..."
+            if num is None else
+            f"⏳ Scheduling {num} messages for chat **{destination}**..."
+        )
     )
 
     try:

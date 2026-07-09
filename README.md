@@ -10,7 +10,7 @@ A lightweight Telegram userbot built with [Pyrogram](https://docs.pyrogram.org/)
 
 | Command | Description |
 |---|---|
-| `.send <interval> <count>` | Schedules `count` copies of the replied-to message at the given interval |
+| `.send <interval> [count]` | Schedules copies of the replied-to message at the given interval |
 | `.update` | Clears current scheduled messages and recreates the last saved `.send` schedule in the current chat/topic |
 | `.clear` | Deletes **all** scheduled messages in the current chat |
 
@@ -82,20 +82,21 @@ On first launch, Pyrogram will ask you to log in with your phone number and a on
 
 ## 📖 Usage
 
-### `.send <interval> <count>`
+### `.send <interval> [count]`
 
-Reply to any message and run this command to schedule `count` copies of it at the specified interval.
+Reply to any message and run this command to schedule copies of it at the specified interval.
 
 **Interval format:** combine `d` (days), `h` (hours), `m` (minutes).
 
 ```
+.send 1h            → fills the schedule up to Telegram's limit when AUTO_FILL_TO_LIMIT is enabled
 .send 1h 5          → 5 messages, one per hour
 .send 30m 10        → 10 messages, every 30 minutes
 .send 1d 3          → 3 messages, one per day
 .send 2h30m 4       → 4 messages, every 2 hours 30 minutes
 ```
 
-Progress updates are sent to your **Saved Messages**. By default, `.send` first clears old scheduled messages in the same chat/topic and fills the schedule up to Telegram's 100 scheduled-message limit.
+Progress updates are sent to your **Saved Messages**. By default, `.send` first clears old scheduled messages in the same chat/topic and fills the schedule up to Telegram's 100 scheduled-message limit. When `AUTO_FILL_TO_LIMIT` is enabled, `count` is optional. When it is disabled, use `.send <interval> <count>`.
 
 The latest `.send` settings are saved locally in `schedule_state.json` so `.update` and auto-refresh can reuse the same message, interval, and count later. This file is ignored by Git.
 
