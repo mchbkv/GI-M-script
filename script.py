@@ -34,10 +34,12 @@ if not API_ID or not API_HASH:
 app = Client("my_account", api_id=int(API_ID), api_hash=API_HASH)
 STATE_FILE = Path("schedule_state.json")
 MAX_SCHEDULED_MESSAGES = 100
+MAX_SCHEDULE_AHEAD_SECONDS = 364 * 86400
 AUTO_CLEAR_BEFORE_SEND = True
 AUTO_FILL_TO_LIMIT = True
 AUTO_REFRESH_ENABLED = True
 AUTO_REFRESH_INTERVAL_SECONDS = 300
+MAX_AUTO_FLOOD_WAIT_SECONDS = 60
 WRITE_FORBIDDEN_MARKERS = (
     "CHAT_WRITE_FORBIDDEN",
     "USER_BANNED_IN_CHANNEL",
@@ -51,6 +53,7 @@ WRITE_FORBIDDEN_MARKERS = (
 SCHEDULE_STOP_MARKERS = (
     "SCHEDULE_DATE_TOO_LATE",
 )
+FLOOD_WAIT_RE = re.compile(r"(?:FLOOD_WAIT_(\d+)|wait of (\d+) seconds)")
 
 
 def parse_time(time_str: str) -> int:
@@ -66,11 +69,43 @@ def parse_time(time_str: str) -> int:
     return total_seconds
 
 
+def get_reply_header(message):
+    raw_message = getattr(message, "_raw", None)
+    return getattr(raw_message, "reply_to", None)
+
+
+def is_forum_topic_message(message):
+    reply_header = get_reply_header(message)
+    chat = getattr(message, "chat", None)
+
+    return bool(
+        getattr(message, "is_topic_message", False)
+        or getattr(reply_header, "forum_topic", False)
+        or getattr(chat, "is_forum", False)
+    )
+
+
+def get_message_topic_id(message):
+    reply_header = get_reply_header(message)
+    topic_id = (
+        getattr(message, "reply_to_top_message_id", None)
+        or getattr(reply_header, "reply_to_top_id", None)
+    )
+
+    if topic_id is None and is_forum_topic_message(message):
+        topic_id = (
+            getattr(message, "reply_to_message_id", None)
+            or getattr(reply_header, "reply_to_msg_id", None)
+        )
+
+    return topic_id
+
+
 def get_topic_id(message, fallback_message=None):
-    topic_id = getattr(message, "reply_to_top_message_id", None)
+    topic_id = get_message_topic_id(message)
 
     if topic_id is None and fallback_message is not None:
-        topic_id = getattr(fallback_message, "reply_to_top_message_id", None)
+        topic_id = get_message_topic_id(fallback_message)
 
     return topic_id
 
@@ -89,6 +124,50 @@ def is_schedule_stop_error(error_text):
 
 def get_batch_limit(message_count):
     return max(1, MAX_SCHEDULED_MESSAGES // max(1, message_count))
+
+
+def get_date_limit(interval_seconds):
+    return MAX_SCHEDULE_AHEAD_SECONDS // interval_seconds
+
+
+def limit_schedule_count(requested_count, message_count, interval_seconds):
+    message_limit = get_batch_limit(message_count)
+    date_limit = get_date_limit(interval_seconds)
+    hard_limit = min(message_limit, date_limit)
+
+    if requested_count is None:
+        requested_count = message_limit
+
+    return min(requested_count, hard_limit), requested_count, hard_limit
+
+
+def get_flood_wait_seconds(error):
+    value = getattr(error, "value", None)
+
+    if isinstance(value, int):
+        return value
+
+    match = FLOOD_WAIT_RE.search(str(error))
+
+    if not match:
+        return None
+
+    seconds = next((group for group in match.groups() if group), None)
+
+    return int(seconds) if seconds else None
+
+
+async def invoke_with_flood_wait(client, query):
+    try:
+        return await client.invoke(query)
+    except Exception as e:
+        wait_seconds = get_flood_wait_seconds(e)
+
+        if wait_seconds is None or wait_seconds > MAX_AUTO_FLOOD_WAIT_SECONDS:
+            raise
+
+        await asyncio.sleep(wait_seconds + 1)
+        return await client.invoke(query)
 
 
 def load_schedule_state():
@@ -169,7 +248,7 @@ async def parse_message_text(client, message):
     return parsed["message"], parsed["entities"] or None
 
 
-async def schedule_recreated_message(client, peer, message, schedule_date, topic_id, media_group=None):
+async def schedule_recreated_message(client, chat_id, peer, message, schedule_date, topic_id, media_group=None):
     schedule_timestamp = int(schedule_date.timestamp())
 
     if media_group:
@@ -191,7 +270,8 @@ async def schedule_recreated_message(client, peer, message, schedule_date, topic
                 )
             )
 
-        await client.invoke(
+        await invoke_with_flood_wait(
+            client,
             functions.messages.SendMultiMedia(
                 peer=peer,
                 multi_media=multi_media,
@@ -201,11 +281,25 @@ async def schedule_recreated_message(client, peer, message, schedule_date, topic
         )
         return
 
+    try:
+        await client.copy_message(
+            chat_id=chat_id,
+            from_chat_id=message.chat.id,
+            message_id=message.id,
+            reply_to_message_id=topic_id,
+            schedule_date=schedule_date
+        )
+        return
+    except Exception as copy_error:
+        if "SCHEDULE_DATE_TOO_LATE" in str(copy_error):
+            raise
+
     file_id = get_message_file_id(message)
 
     if file_id:
         text, entities = await parse_message_text(client, message)
-        await client.invoke(
+        await invoke_with_flood_wait(
+            client,
             functions.messages.SendMedia(
                 peer=peer,
                 media=utils.get_input_media_from_file_id(file_id),
@@ -220,7 +314,8 @@ async def schedule_recreated_message(client, peer, message, schedule_date, topic
 
     if message.text:
         text, entities = await parse_message_text(client, message)
-        await client.invoke(
+        await invoke_with_flood_wait(
+            client,
             functions.messages.SendMessage(
                 peer=peer,
                 message=text,
@@ -232,7 +327,7 @@ async def schedule_recreated_message(client, peer, message, schedule_date, topic
         )
         return
 
-    raise ValueError("unsupported protected message type")
+    raise ValueError(f"unsupported protected message type; copy fallback failed: {copy_error}")
 
 
 def parse_send_command(command_text):
@@ -292,7 +387,16 @@ async def notify_manual_update(client, destination, config, error_text):
 
 def get_raw_message_topic_id(message):
     reply_header = getattr(message, "reply_to", None)
-    return getattr(reply_header, "reply_to_top_id", None) if reply_header else None
+
+    if not reply_header:
+        return None
+
+    topic_id = getattr(reply_header, "reply_to_top_id", None)
+
+    if topic_id is None and getattr(reply_header, "forum_topic", False):
+        topic_id = getattr(reply_header, "reply_to_msg_id", None)
+
+    return topic_id
 
 
 def filter_scheduled_messages(messages, topic_id):
@@ -303,7 +407,10 @@ def filter_scheduled_messages(messages, topic_id):
 
 
 async def get_scheduled_messages(client, peer, topic_id=None):
-    history = await client.invoke(functions.messages.GetScheduledHistory(peer=peer, hash=0))
+    history = await invoke_with_flood_wait(
+        client,
+        functions.messages.GetScheduledHistory(peer=peer, hash=0)
+    )
     return filter_scheduled_messages(history.messages, topic_id)
 
 
@@ -314,12 +421,15 @@ async def delete_scheduled_messages(client, peer, topic_id=None):
         return 0
 
     msg_ids = [msg.id for msg in messages]
-    await client.invoke(functions.messages.DeleteScheduledMessages(peer=peer, id=msg_ids))
+    await invoke_with_flood_wait(
+        client,
+        functions.messages.DeleteScheduledMessages(peer=peer, id=msg_ids)
+    )
 
     return len(msg_ids)
 
 
-async def schedule_batch(client, peer, from_peer, target_msg, msg_ids, media_group, topic_id,
+async def schedule_batch(client, chat_id, peer, from_peer, target_msg, msg_ids, media_group, topic_id,
                          interval_seconds, count, report_msg, stop_on_error=False, error_callback=None):
 
     success_count = 0
@@ -333,7 +443,8 @@ async def schedule_batch(client, peer, from_peer, target_msg, msg_ids, media_gro
             if use_forward:
                 random_ids = [client.rnd_id() for _ in msg_ids]
 
-                await client.invoke(
+                await invoke_with_flood_wait(
+                    client,
                     functions.messages.ForwardMessages(
                         from_peer=from_peer,
                         to_peer=peer,
@@ -345,7 +456,7 @@ async def schedule_batch(client, peer, from_peer, target_msg, msg_ids, media_gro
                     )
                 )
             else:
-                await schedule_recreated_message(client, peer, target_msg, schedule_date, topic_id, media_group)
+                await schedule_recreated_message(client, chat_id, peer, target_msg, schedule_date, topic_id, media_group)
 
             success_count += 1
 
@@ -361,7 +472,7 @@ async def schedule_batch(client, peer, from_peer, target_msg, msg_ids, media_gro
                 use_forward = False
 
                 try:
-                    await schedule_recreated_message(client, peer, target_msg, schedule_date, topic_id, media_group)
+                    await schedule_recreated_message(client, chat_id, peer, target_msg, schedule_date, topic_id, media_group)
                     success_count += 1
                     await client.send_message(
                         "me",
@@ -403,13 +514,17 @@ async def schedule_from_config(client, config, report_msg=None, stop_on_error=Tr
     target_msg = await client.get_messages(config["source_chat_id"], config["message_id"])
     msg_ids, media_group = await get_message_batch(client, config["source_chat_id"], target_msg)
     from_peer = await client.resolve_peer(target_msg.chat.id)
-    count = get_batch_limit(len(msg_ids)) if AUTO_FILL_TO_LIMIT else config["count"]
+    count, _, _ = limit_schedule_count(config["count"], len(msg_ids), config["interval_seconds"])
+
+    if count < 1:
+        raise ValueError("interval is too long to schedule within Telegram's one-year limit")
 
     async def report_update_error(error_text):
         await notify_manual_update(client, config["destination"], config, error_text)
 
     return await schedule_batch(
         client=client,
+        chat_id=config["chat_id"],
         peer=peer,
         from_peer=from_peer,
         target_msg=target_msg,
@@ -509,12 +624,33 @@ async def schedule_messages(client, message):
         await client.send_message("me", str(e))
         return
 
-    if AUTO_FILL_TO_LIMIT:
-        num = get_batch_limit(len(msg_ids))
+    requested_count = None if num is None else num
+    num, original_num, hard_limit = limit_schedule_count(requested_count, len(msg_ids), interval_seconds)
+
+    if num < 1:
+        await client.edit_message_text(
+            chat_id="me",
+            message_id=report_msg.id,
+            text=(
+                f"Cannot schedule messages for chat **{destination}**: "
+                "the interval is longer than Telegram's one-year scheduling limit."
+            )
+        )
+        return
+
+    if requested_count is None:
         await client.edit_message_text(
             chat_id="me",
             message_id=report_msg.id,
             text=f"⏳ Scheduling up to {num} message batches for chat **{destination}**..."
+        )
+    elif num < original_num:
+        await client.send_message(
+            "me",
+            (
+                f"Requested **{original_num}** batches for chat **{destination}**, "
+                f"but Telegram limits this interval to **{hard_limit}**. Scheduling **{num}**."
+            )
         )
 
     deleted_count = 0
@@ -527,6 +663,7 @@ async def schedule_messages(client, message):
 
     success_count, _ = await schedule_batch(
         client=client,
+        chat_id=chat_id,
         peer=peer,
         from_peer=from_peer,
         target_msg=target_msg,

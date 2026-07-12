@@ -18,8 +18,9 @@ A lightweight Telegram userbot built with [Pyrogram](https://docs.pyrogram.org/)
 - 🖼️ Supports text, single media, and **media group** (album) messages.
 - 🔁 Remembers the last `.send` settings per chat/topic and can refresh them with `.update`.
 - ♻️ Can auto-clear old scheduled messages, fill the schedule up to Telegram's limit, and auto-refresh empty schedules.
+- 🧵 Handles scheduled messages separately inside forum topics.
 - 🛡️ Automatically pauses every 20 messages to avoid Telegram flood-wait limits.
-- 🛑 Stops gracefully when Telegram's 100-message schedule limit is reached.
+- 🛑 Caps schedules at Telegram's 100-message and one-year future-date limits.
 - 📝 All status reports are sent privately to your **Saved Messages** (`me`).
 
 ---
@@ -96,7 +97,7 @@ Reply to any message and run this command to schedule copies of it at the specif
 .send 2h30m 4       → 4 messages, every 2 hours 30 minutes
 ```
 
-Progress updates are sent to your **Saved Messages**. By default, `.send` first clears old scheduled messages in the same chat/topic and fills the schedule up to Telegram's 100 scheduled-message limit. When `AUTO_FILL_TO_LIMIT` is enabled, `count` is optional. When it is disabled, use `.send <interval> <count>`.
+Progress updates are sent to your **Saved Messages**. By default, `.send` first clears old scheduled messages in the same chat/topic and fills the schedule up to Telegram's 100 scheduled-message limit. It also caps the batch count so the last scheduled message stays within Telegram's one-year scheduling window. When `AUTO_FILL_TO_LIMIT` is enabled, `count` is optional. When it is disabled, use `.send <interval> <count>`.
 
 The latest `.send` settings are saved locally in `schedule_state.json` so `.update` and auto-refresh can reuse the same message, interval, and count later. This file is ignored by Git.
 
@@ -118,13 +119,13 @@ When `AUTO_REFRESH_ENABLED` is enabled in `script.py`, the userbot periodically 
 
 ### `.clear`
 
-Run in any chat to immediately delete scheduled messages in that chat/topic and disable the saved auto-refresh settings for it.
+Run in any chat or forum topic to immediately delete scheduled messages in that chat/topic and disable the saved auto-refresh settings for it.
 
 ```
 .clear
 ```
 
-If `.clear` is run outside a forum topic, it removes saved auto-refresh settings for the whole chat.
+If `.clear` is run outside a forum topic, it removes saved auto-refresh settings for the whole chat. Inside a forum topic, it only touches scheduled messages and saved settings for that topic.
 
 ---
 
@@ -160,6 +161,8 @@ AUTO_REFRESH_INTERVAL_SECONDS = 300
 | `RuntimeError: There is no current event loop` | Make sure you are using **Python 3.10+**. The script handles this automatically for Windows. |
 | `TgCrypto is missing` warning | Install it with `pip install TgCrypto` for better performance (optional). |
 | `SCHEDULE_TOO_MUCH` error | Telegram allows max **100 scheduled messages** per chat. The script will stop and notify you. |
+| `SCHEDULE_DATE_TOO_LATE` error | Telegram does not allow scheduling more than about one year ahead. The script caps `.send`, `.update`, and auto-refresh counts to avoid this. |
+| Short `FLOOD_WAIT` during scheduled-history checks | The script waits and retries automatically for short waits. |
 | Session expired / login required | Delete `my_account.session` and re-run the script to log in again. |
 
 ---
